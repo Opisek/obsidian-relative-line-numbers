@@ -22,6 +22,9 @@ let lastUpdateIdentificator: string = "";
 let lastUpdate: number = 0
 let lastDispatchedUpdate: number = 0;
 
+let lastCursorUpdate: number = 0;
+let lastSurpressedUpdate: number = 0;
+
 class Marker extends GutterMarker {
   /** The text to render in gutter */
   text: string;
@@ -72,8 +75,14 @@ function curryRelativeLineNumbers(updateTime: number) {
 
 function relativeLineNumbers(lineNo: number, state: EditorState, updateTime: number) {
   // Do not act on old updates
-  if (updateTime < lastUpdate) {
-    return lastLineResult.get(lineNo) || blank;
+  if (updateTime < lastUpdate) return lastLineResult.get(lineNo) || blank;
+
+  // Make sure the cursor is up-to-date even if no update has been dispatched.
+  const currentTime = Date.now();
+  if (lastSurpressedUpdate > lastCursorUpdate) {
+    lastCursorUpdate = currentTime; 
+    selectionTo = state.selection.asSingle().ranges[0].to;
+    cursorLine = state.doc.lineAt(selectionTo).number;
   }
 
   // Blank if out of range or current line
@@ -140,6 +149,14 @@ function dispatchUpdate(currentTime: number, viewUpdate: ViewUpdate) {
 // when selection (cursorActivity) happens
 const lineNumbersUpdateListener = EditorView.updateListener.of(
   (viewUpdate: ViewUpdate) => {
+    // TODO: this initial if check prevents updates that should happen in a certain edge case.
+    // Reproduction steps (not necessarily minimal):
+    // - Use vim bindings with this plugin.
+    // - Have a line with an admonition/quote block i.e. a line beginning with "> ".
+    // - Enter insert mode at the end of this line.
+    // - Press the enter key.
+    // A new line will be created, but the line numbers will not update.
+    // This bug exists in the versions before the performance patch that included this comment.
     if (viewUpdate.selectionSet) {
       // Position calculations
       const state = viewUpdate.state;
@@ -150,6 +167,8 @@ const lineNumbersUpdateListener = EditorView.updateListener.of(
 
       // If we have not changed the line, do not update the line numbers.
       if (newCursorLine == cursorLine) return;
+      const currentTime = Date.now();
+      lastCursorUpdate = currentTime; 
       cursorLine = newCursorLine;
 
       // Prevent double updates
@@ -162,7 +181,6 @@ const lineNumbersUpdateListener = EditorView.updateListener.of(
       // following call happen soon, then we prepare for a burst of updates and
       // add the delay. An exception is made when there has not been an update
       // for a long time, so the user can see some incremental changes.
-      const currentTime = Date.now();
       const dispatchInstantly = currentTime - lastUpdate >= 2 * minimumDispatchTime || currentTime - lastDispatchedUpdate > maximumDispatchTime;
       lastUpdate = currentTime;
 
@@ -178,6 +196,8 @@ const lineNumbersUpdateListener = EditorView.updateListener.of(
           if (currentTime == lastUpdate) dispatchUpdate(currentTime, viewUpdate);
         }, minimumDispatchTime);
       }
+    } else {
+      lastSurpressedUpdate = Date.now();
     }
   }
 );
