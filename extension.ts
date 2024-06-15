@@ -149,14 +149,6 @@ function dispatchUpdate(currentTime: number, viewUpdate: ViewUpdate) {
 // when selection (cursorActivity) happens
 const lineNumbersUpdateListener = EditorView.updateListener.of(
   (viewUpdate: ViewUpdate) => {
-    // TODO: this initial if check prevents updates that should happen in a certain edge case.
-    // Reproduction steps (not necessarily minimal):
-    // - Use vim bindings with this plugin.
-    // - Have a line with an admonition/quote block i.e. a line beginning with "> ".
-    // - Enter insert mode at the end of this line.
-    // - Press the enter key.
-    // A new line will be created, but the line numbers will not update.
-    // This bug exists in the versions before the performance patch that included this comment.
     if (viewUpdate.selectionSet) {
       // Position calculations
       const state = viewUpdate.state;
