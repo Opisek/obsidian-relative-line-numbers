@@ -3,18 +3,24 @@ import { EditorView, ViewUpdate, gutter, lineNumbers, GutterMarker } from "@code
 import { Compartment, EditorState } from "@codemirror/state";
 import {foldedRanges} from "@codemirror/language"
 
+// Adjustable timing parameters
+const minimumDispatchTime = 50;
+const maximumDispatchTime = 500;
+
+// Calculation
 let relativeLineNumberGutter = new Compartment();
 let cursorLine: number = -1;
 let selectionTo: number = -1;
 let charLength: number = 0;
 let blank: string = "";
 
+// Cache
+const lastLineResult = new Map<number, string>();
+
+// Dispatching and double update prevention
+let lastUpdateIdentificator: string = "";
 let lastUpdate: number = 0
-
-const lastUpdateForLine = new Map<number, string>();
-const lastNumberForLine = new Map<number, string>();
-
-let linesUpdated = new Set<number>();
+let lastDispatchedUpdate: number = 0;
 
 class Marker extends GutterMarker {
   /** The text to render in gutter */
@@ -65,30 +71,23 @@ function curryRelativeLineNumbers(updateTime: number) {
 }
 
 function relativeLineNumbers(lineNo: number, state: EditorState, updateTime: number) {
-  // Ignore the first line update, since two are always triggered.
-  const currentUpdateIdentificator = createUpdateIdentificator(state);
-  if (!lastUpdateForLine.has(lineNo) || lastUpdateForLine.get(lineNo) != currentUpdateIdentificator) {
-    lastUpdateForLine.set(lineNo, currentUpdateIdentificator);
-    return lastNumberForLine.get(lineNo) || blank;
-  }
-
   // Do not act on old updates
   if (updateTime < lastUpdate) {
-    return lastNumberForLine.get(lineNo) || blank;
+    return lastLineResult.get(lineNo) || blank;
   }
 
   // Blank if out of range or current line
   if (lineNo > state.doc.lines || lineNo == cursorLine) {
-    lastNumberForLine.set(lineNo, blank);
+    lastLineResult.set(lineNo, blank);
     return blank;
   }
 
+  // Determine the scope of the line numbers
   if (selectionTo == -1) {
     selectionTo = state.selection.asSingle().ranges[0].to;
   }
   const selectionFrom = state.doc.line(lineNo).from;
 
-  // Determine the scope of the line numbers
   let start, stop;
   if (selectionTo > selectionFrom) {
     start = selectionFrom;
@@ -99,6 +98,7 @@ function relativeLineNumbers(lineNo: number, state: EditorState, updateTime: num
   }
 
   // Count the number of lines that are folded between the start and stop
+  // TODO: perhaps use a data structures that offers better access times like a sparse table
   const folds = foldedRanges(state)
   let foldedCount = 0
   folds.between(start, stop, (from, to) => {
@@ -107,16 +107,18 @@ function relativeLineNumbers(lineNo: number, state: EditorState, updateTime: num
     foldedCount += rangeStop - rangeStart
   })
 
+  // Finazile the result
   const lineNumberResult = (Math.abs(cursorLine - lineNo) - foldedCount).toString().padStart(charLength, " ");
-  lastNumberForLine.set(lineNo, lineNumberResult);
+  lastLineResult.set(lineNo, lineNumberResult);
   return lineNumberResult;
 }
 
-// This shows the numbers in the gutter
+// This shows the numbers in the gutter on startup.
 const showLineNumbers = relativeLineNumberGutter.of(
   lineNumbers({ formatNumber: curryRelativeLineNumbers(0) })
 );
 
+// Used to recognize duplicate updates
 function createUpdateIdentificator(state: EditorState): string {
   return [
     JSON.stringify(state.selection.toJSON(), null, 2),
@@ -124,20 +126,25 @@ function createUpdateIdentificator(state: EditorState): string {
   ].join('-');
 }
 
+// Update rate limiting
+function dispatchUpdate(currentTime: number, viewUpdate: ViewUpdate) {
+  lastDispatchedUpdate = currentTime;
+  viewUpdate.view.dispatch({
+    effects: relativeLineNumberGutter.reconfigure(
+      lineNumbers({ formatNumber: curryRelativeLineNumbers(currentTime) })
+    ),
+  });
+}
+
 // This ensures the numbers update
 // when selection (cursorActivity) happens
 const lineNumbersUpdateListener = EditorView.updateListener.of(
   (viewUpdate: ViewUpdate) => {
     if (viewUpdate.selectionSet) {
-      const currentTime = (new Date()).getMilliseconds();
-      lastUpdate = currentTime;
-      linesUpdated = new Set<number>();
-
+      // Position calculations
       const state = viewUpdate.state;
-
       charLength = linesCharLength(state);
       blank = " ".padStart(charLength, " ");
-
       selectionTo = state.selection.asSingle().ranges[0].to;
       const newCursorLine = state.doc.lineAt(selectionTo).number;
 
@@ -145,24 +152,32 @@ const lineNumbersUpdateListener = EditorView.updateListener.of(
       if (newCursorLine == cursorLine) return;
       cursorLine = newCursorLine;
 
-      // We add a delay to dispatching updates to avoid issuing updates too
-      // often, like when scrolling or holding down movement keys.
-      // If this is not done, then the rendering thread is slowed down resulting
-      // in visible lag.
-      // 
-      // TODO: consider making the delay adaptive. It should increase if the
-      // updates are cancelled most of the time and decrease if they are not.
-      setTimeout(() => { 
-        // Don't act on old updates
-        if (currentTime != lastUpdate) {
-          return;
-        }
-        viewUpdate.view.dispatch({
-          effects: relativeLineNumberGutter.reconfigure(
-            lineNumbers({ formatNumber: curryRelativeLineNumbers(currentTime) })
-          ),
-        });
-      }, 50);
+      // Prevent double updates
+      const updateIdentificator = createUpdateIdentificator(state);
+      if (updateIdentificator == lastUpdateIdentificator) return;
+      lastUpdateIdentificator = updateIdentificator;
+
+      // If there have not been any scheduled updates for some time, we dispatch
+      // the update instantly to reduce perceivable waittime. Should the
+      // following call happen soon, then we prepare for a burst of updates and
+      // add the delay. An exception is made when there has not been an update
+      // for a long time, so the user can see some incremental changes.
+      const currentTime = Date.now();
+      const dispatchInstantly = currentTime - lastUpdate >= 2 * minimumDispatchTime || currentTime - lastDispatchedUpdate > maximumDispatchTime;
+      lastUpdate = currentTime;
+
+      if (dispatchInstantly) {  
+        dispatchUpdate(currentTime, viewUpdate);
+      } else {
+        // We add a delay to dispatching updates to avoid issuing updates too
+        // often, like when scrolling or holding down movement keys.
+        // If this is not done, then the rendering thread is slowed down resulting
+        // in visible lag.
+        setTimeout(() => {
+          // If a newer update has been queued, cancel this update.
+          if (currentTime == lastUpdate) dispatchUpdate(currentTime, viewUpdate);
+        }, minimumDispatchTime);
+      }
     }
   }
 );
