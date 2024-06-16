@@ -169,9 +169,8 @@ const lineNumbersUpdateListener = EditorView.updateListener.of(
     // If there have not been any scheduled updates for some time, we dispatch
     // the update instantly to reduce perceivable waittime. Should the
     // following call happen soon, then we prepare for a burst of updates and
-    // add the delay. An exception is made when there has not been an update
-    // for a long time, so the user can see some incremental changes.
-    const dispatchInstantly = currentTime - lastUpdate >= 2 * minimumDispatchTime || currentTime - lastDispatchedUpdate > maximumDispatchTime;
+    // add the delay.
+    const dispatchInstantly = currentTime - lastUpdate >= 2 * minimumDispatchTime;
     lastUpdate = currentTime;
 
     if (dispatchInstantly) {  
