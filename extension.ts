@@ -3,9 +3,8 @@ import { EditorView, ViewUpdate, gutter, lineNumbers, GutterMarker } from "@code
 import { Compartment, EditorState } from "@codemirror/state";
 import {foldedRanges} from "@codemirror/language"
 
-// Adjustable timing parameters
-const minimumDispatchTime = 50;
-const maximumDispatchTime = 500;
+// Adjustable timing parameter
+const dispatchTime = 50;
 
 // Calculation
 let relativeLineNumberGutter = new Compartment();
@@ -170,7 +169,7 @@ const lineNumbersUpdateListener = EditorView.updateListener.of(
     // the update instantly to reduce perceivable waittime. Should the
     // following call happen soon, then we prepare for a burst of updates and
     // add the delay.
-    const dispatchInstantly = currentTime - lastUpdate >= 2 * minimumDispatchTime;
+    const dispatchInstantly = currentTime - lastUpdate >= 2 * dispatchTime;
     lastUpdate = currentTime;
 
     if (dispatchInstantly) {  
@@ -183,7 +182,7 @@ const lineNumbersUpdateListener = EditorView.updateListener.of(
       setTimeout(() => {
         // If a newer update has been queued, cancel this update.
         if (currentTime == lastUpdate) dispatchUpdate(currentTime, viewUpdate);
-      }, minimumDispatchTime);
+      }, dispatchTime);
     }
   }
 );
