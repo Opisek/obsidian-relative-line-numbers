@@ -22,8 +22,7 @@ let lastUpdateIdentificator: string = "";
 let lastUpdate: number = 0
 let lastDispatchedUpdate: number = 0;
 
-let lastCursorUpdate: number = 0;
-let lastSurpressedUpdate: number = 0;
+let lastLineNumber: number = 0;
 
 class Marker extends GutterMarker {
   /** The text to render in gutter */
@@ -78,12 +77,11 @@ function relativeLineNumbers(lineNo: number, state: EditorState, updateTime: num
   if (updateTime < lastUpdate) return lastLineResult.get(lineNo) || blank;
 
   // Make sure the cursor is up-to-date even if no update has been dispatched.
-  const currentTime = Date.now();
-  if (lastSurpressedUpdate > lastCursorUpdate) {
-    lastCursorUpdate = currentTime; 
+  if (lineNo < lastLineNumber || lineNo-1 == cursorLine) {
     selectionTo = state.selection.asSingle().ranges[0].to;
     cursorLine = state.doc.lineAt(selectionTo).number;
   }
+  lastLineNumber = lineNo;
 
   // Blank if out of range or current line
   if (lineNo > state.doc.lines || lineNo == cursorLine) {
@@ -149,47 +147,44 @@ function dispatchUpdate(currentTime: number, viewUpdate: ViewUpdate) {
 // when selection (cursorActivity) happens
 const lineNumbersUpdateListener = EditorView.updateListener.of(
   (viewUpdate: ViewUpdate) => {
-    if (viewUpdate.selectionSet) {
-      // Position calculations
-      const state = viewUpdate.state;
-      charLength = linesCharLength(state);
-      blank = " ".padStart(charLength, " ");
-      selectionTo = state.selection.asSingle().ranges[0].to;
-      const newCursorLine = state.doc.lineAt(selectionTo).number;
+    if (!viewUpdate.selectionSet) return
 
-      // If we have not changed the line, do not update the line numbers.
-      if (newCursorLine == cursorLine) return;
-      const currentTime = Date.now();
-      lastCursorUpdate = currentTime; 
-      cursorLine = newCursorLine;
+    // Position calculations
+    const state = viewUpdate.state;
+    charLength = linesCharLength(state);
+    blank = " ".padStart(charLength, " ");
+    selectionTo = state.selection.asSingle().ranges[0].to;
+    const newCursorLine = state.doc.lineAt(selectionTo).number;
 
-      // Prevent double updates
-      const updateIdentificator = createUpdateIdentificator(state);
-      if (updateIdentificator == lastUpdateIdentificator) return;
-      lastUpdateIdentificator = updateIdentificator;
+    // If we have not changed the line, do not update the line numbers.
+    if (newCursorLine == cursorLine) return;
+    const currentTime = Date.now();
+    cursorLine = newCursorLine;
 
-      // If there have not been any scheduled updates for some time, we dispatch
-      // the update instantly to reduce perceivable waittime. Should the
-      // following call happen soon, then we prepare for a burst of updates and
-      // add the delay. An exception is made when there has not been an update
-      // for a long time, so the user can see some incremental changes.
-      const dispatchInstantly = currentTime - lastUpdate >= 2 * minimumDispatchTime || currentTime - lastDispatchedUpdate > maximumDispatchTime;
-      lastUpdate = currentTime;
+    // Prevent double updates
+    const updateIdentificator = createUpdateIdentificator(state);
+    if (updateIdentificator == lastUpdateIdentificator) return;
+    lastUpdateIdentificator = updateIdentificator;
 
-      if (dispatchInstantly) {  
-        dispatchUpdate(currentTime, viewUpdate);
-      } else {
-        // We add a delay to dispatching updates to avoid issuing updates too
-        // often, like when scrolling or holding down movement keys.
-        // If this is not done, then the rendering thread is slowed down resulting
-        // in visible lag.
-        setTimeout(() => {
-          // If a newer update has been queued, cancel this update.
-          if (currentTime == lastUpdate) dispatchUpdate(currentTime, viewUpdate);
-        }, minimumDispatchTime);
-      }
+    // If there have not been any scheduled updates for some time, we dispatch
+    // the update instantly to reduce perceivable waittime. Should the
+    // following call happen soon, then we prepare for a burst of updates and
+    // add the delay. An exception is made when there has not been an update
+    // for a long time, so the user can see some incremental changes.
+    const dispatchInstantly = currentTime - lastUpdate >= 2 * minimumDispatchTime || currentTime - lastDispatchedUpdate > maximumDispatchTime;
+    lastUpdate = currentTime;
+
+    if (dispatchInstantly) {  
+      dispatchUpdate(currentTime, viewUpdate);
     } else {
-      lastSurpressedUpdate = Date.now();
+      // We add a delay to dispatching updates to avoid issuing updates too
+      // often, like when scrolling or holding down movement keys.
+      // If this is not done, then the rendering thread is slowed down resulting
+      // in visible lag.
+      setTimeout(() => {
+        // If a newer update has been queued, cancel this update.
+        if (currentTime == lastUpdate) dispatchUpdate(currentTime, viewUpdate);
+      }, minimumDispatchTime);
     }
   }
 );
